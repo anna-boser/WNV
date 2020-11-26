@@ -1,0 +1,151 @@
+---
+title: "Full_WNV_explore"
+author: "Anna Boser"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+library(ggplot2)
+library(sf)
+library(data.table)
+library(dplyr)
+library(tmap)
+# library(tidyverse)
+library(magick)
+```
+
+```{r}
+DF <- fread(here::here("Mosquito", "data","WNV_Counties.csv"))
+DF$Date <- as.Date(DF$Date)
+```
+
+###Mosquito Pool counts 
+```{r}
+ggplot(DF[Type == "WNVPools", .(Count = sum(Count)), by = Date], aes(x = Date, y = Count, group = 1)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_x_date(date_labels = "%Y")
+```
+
+###2019 report check
+
+```{r}
+Reported_df <- function(df){
+  
+  Count_report_2018 <- c(1963, 499, 163)
+  Count_report_2019 <- c(3288, 225, 139)
+  Counties_report_2018 <- c(29,21,16)
+  Counties_report_2019 <- c(25, 21, 17)
+
+  Counts_2019 <- c()
+  Counts_2018 <- c()
+  Counties_2019 <- c()
+  Counties_2018 <- c()
+  for (type in c("WNVPools", "WNVBirds", "WNVSentinels")){
+    Counts_2019 <- c(Counts_2019, 
+                     df[Type == type & Year == 2019 & Month %in% 1:11, #Onlt first 11 months bevause report published at the beginning of December
+                        .(Count = sum(Count)), 
+                        by = Year]$Count)
+    Counts_2018 <- c(Counts_2018, 
+                     df[Type == type & Year == 2018 & Month %in% 1:11, 
+                        .(Count = sum(Count)), 
+                        by = Year]$Count)
+    Counties_2019 <- c(Counties_2019, 
+                       df[Type == type & Year == 2019 & Month %in% 1:11,]$County %>% unique() %>% length())
+    Counties_2018 <- c(Counties_2018, 
+                       df[Type == type & Year == 2018 & Month %in% 1:11,]$County %>% unique() %>% length())
+  }
+
+  Reported <- data.frame(Count_report_2018, 
+                         Counts_2018,
+                         Count_report_2019, 
+                         Counts_2019, 
+                         Counties_report_2018, 
+                         Counties_2018, 
+                         Counties_report_2019,
+                         Counties_2019)
+  rownames(Reported) = c("Pools", "Birds", "Sentinel")
+
+  return(Reported)
+}
+
+Reported_df(DF)
+```
+
+Looks not terrible!
+
+#Mean by month
+```{r}
+month <- DF[Type == "WNVPools", .(Count = sum(Count)), by = .(Month, Year)][, .(mean_ct = mean(Count)), by = Month]
+month <- month[order(month$mean_ct, decreasing = TRUE),]
+month
+```
+
+```{r}
+ggplot(month, aes(x = Month, y = mean_ct, group = 1)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_x_continuous(breaks = 1:12)
+```
+
+
+#Time series by county
+```{r}
+ggplot(DF[Type == "WNVPools", .(Count = sum(Count)), by = .(Date, County)], aes(x = Date, y = Count, group = 1)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_x_date(date_labels = "%Y") + 
+  facet_wrap(~ County)
+```
+
+This actually looks fairly stable. 
+
+
+```{r}
+CA_Counties <- st_read(dsn = here("data", "CA_Counties", "CA_Counties_TIGER2016.shp"), layer = "CA_Counties_TIGER2016") %>% st_transform(4326)
+CA_Counties <- CA_Counties %>% select("County" = NAMELSAD)
+
+# DF <- st_read(here("data", "WNV_Counties.shp"), layer = "WNV_Counties")
+```
+
+```{r}
+Avg_Counts_by_County <- DF[Type == "WNVPools", .(Count = sum(Count)), by = .(Year, County)][ , .(Ct_per_year = mean(Count)), by = County]
+
+tm_shape(merge(CA_Counties, Avg_Counts_by_County, all.x = TRUE)) + tm_polygons(col = "Ct_per_year")
+```
+
+
+```{r}
+for_anim <- DF[Type == "WNVPools", .(Count = sum(Count)), by = .(Month, Year, County)][, .(Count = mean(Count)), by = .(Month, County)]
+for_anim <- for_anim[order(for_anim$Month),]
+
+for_anim <- merge(for_anim, CA_Counties) %>% st_as_sf()
+
+County_anim <- for_anim %>%
+  tm_shape() +
+  tm_fill(col = 'Count', title = 'Avg mosquito count',
+          palette = "viridis") +
+  tm_facets(along = "Month", free.coords = FALSE) +
+  tm_layout(main.title.size = 1) +
+  tm_shape(CA_Counties) + 
+  tm_borders(col = "black")
+  
+
+County_anim
+
+# animation_tmap(County_anim, filename = "anim.gif", delay = 200, restart.delay = 200) #WHAT THE HECK
+```
+
+
+Plot the pools within our area
+```{r}
+DF = st_as_sf(cbind(DF, DF$Lat, DF$Lon), coords = c("V3", "V2"), crs = 4326, agr = "constant")
+
+s <- st_read(here("ECOSTRESS", "data", "Extent_polygon.shp"))
+
+tm_shape(s) + tm_borders() + tm_shape(DF) + tm_dots()
+```
+
